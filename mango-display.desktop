@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Mango Display
+GenericName=Monitor Manager
+Comment=Wayland monitor layout manager for mangowc
+Exec=mango-display
+Icon=video-display
+Terminal=false
+Type=Application
+Categories=Settings;HardwareSettings;

@@ -1,0 +1,321 @@
+use regex::Regex;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::str::FromStr;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputMode {
+    pub width: i32,
+    pub height: i32,
+    pub refresh_rate: f32,
+    pub current: bool,
+    pub preferred: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Output {
+    pub name: String,
+    pub description: String,
+    pub make: String,
+    pub model: String,
+    pub serial: String,
+    pub physical_size: String,
+    pub position: (i32, i32),
+    pub scale: f32,
+    pub transform: String,
+    pub modes: Vec<OutputMode>,
+    pub enabled: bool,
+}
+
+pub fn wlr_randr_get_outputs() -> Result<Vec<Output>, String> {
+    let output = Command::new("wlr-randr")
+        .output()
+        .map_err(|e| format!("Failed to run wlr-randr: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_wlr_randr_output(&stdout)
+}
+
+pub fn parse_wlr_randr_output(output_str: &str) -> Result<Vec<Output>, String> {
+    let mut outputs = Vec::new();
+    let lines: Vec<&str> = output_str.lines().collect();
+
+    let mut current_output: Option<Output> = None;
+    let name_desc_regex = Regex::new(r#"^([^\s]+)\s+"(.*)""#).unwrap();
+    let pos_regex = Regex::new(r#"^  Position:\s+(-?\d+),(-?\d+)"#).unwrap();
+    let scale_regex = Regex::new(r#"^  Scale:\s+([0-9.]+)"#).unwrap();
+    let transform_regex = Regex::new(r#"^  Transform:\s+(.*)"#).unwrap();
+    let mode_regex = Regex::new(r#"^\s+(\d+)x(\d+) px, ([0-9.]+) Hz(?: \((.*)\))?"#).unwrap();
+    let make_regex = Regex::new(r#"^  Make:\s+(.*)"#).unwrap();
+    let model_regex = Regex::new(r#"^  Model:\s+(.*)"#).unwrap();
+    let serial_regex = Regex::new(r#"^  Serial:\s+(.*)"#).unwrap();
+    let phys_size_regex = Regex::new(r#"^  Physical size:\s+(.*)"#).unwrap();
+    let enabled_regex = Regex::new(r#"^  Enabled:\s+(yes|no)"#).unwrap();
+
+    let mut parsing_modes = false;
+
+    for line in lines {
+        if !line.starts_with(' ') {
+            if let Some(out) = current_output.take() {
+                if out.modes.is_empty() {
+                    // huh
+                }
+                outputs.push(out);
+            }
+            if let Some(caps) = name_desc_regex.captures(line) {
+                current_output = Some(Output {
+                    name: caps.get(1).map_or("", |m| m.as_str()).to_string(),
+                    description: caps.get(2).map_or("", |m| m.as_str()).to_string(),
+                    make: String::new(),
+                    model: String::new(),
+                    serial: String::new(),
+                    physical_size: String::new(),
+                    position: (0, 0),
+                    scale: 1.0,
+                    transform: "normal".to_string(),
+                    modes: Vec::new(),
+                    enabled: true,
+                });
+                parsing_modes = false;
+            }
+        } else if let Some(out) = current_output.as_mut() {
+            if let Some(caps) = enabled_regex.captures(line) {
+                out.enabled = caps.get(1).unwrap().as_str() == "yes";
+            } else if let Some(caps) = make_regex.captures(line) {
+                out.make = caps.get(1).unwrap().as_str().to_string();
+            } else if let Some(caps) = model_regex.captures(line) {
+                out.model = caps.get(1).unwrap().as_str().to_string();
+            } else if let Some(caps) = serial_regex.captures(line) {
+                out.serial = caps.get(1).unwrap().as_str().to_string();
+            } else if let Some(caps) = phys_size_regex.captures(line) {
+                out.physical_size = caps.get(1).unwrap().as_str().to_string();
+            } else if let Some(caps) = pos_regex.captures(line) {
+                let x = i32::from_str(caps.get(1).unwrap().as_str()).unwrap_or(0);
+                let y = i32::from_str(caps.get(2).unwrap().as_str()).unwrap_or(0);
+                out.position = (x, y);
+            } else if let Some(caps) = scale_regex.captures(line) {
+                out.scale = f32::from_str(caps.get(1).unwrap().as_str()).unwrap_or(1.0);
+            } else if let Some(caps) = transform_regex.captures(line) {
+                out.transform = caps.get(1).unwrap().as_str().to_string();
+            } else if line.trim() == "Modes:" {
+                parsing_modes = true;
+            } else if parsing_modes {
+                if let Some(caps) = mode_regex.captures(line) {
+                    let w = i32::from_str(caps.get(1).unwrap().as_str()).unwrap_or(0);
+                    let h = i32::from_str(caps.get(2).unwrap().as_str()).unwrap_or(0);
+                    let freq = f32::from_str(caps.get(3).unwrap().as_str()).unwrap_or(0.0);
+
+                    let mut current = false;
+                    let mut preferred = false;
+
+                    if let Some(flags) = caps.get(4) {
+                        let f_str = flags.as_str();
+                        if f_str.contains("current") {
+                            current = true;
+                        }
+                        if f_str.contains("preferred") {
+                            preferred = true;
+                        }
+                    }
+
+                    out.modes.push(OutputMode {
+                        width: w,
+                        height: h,
+                        refresh_rate: freq,
+                        current,
+                        preferred,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(out) = current_output.take() {
+        outputs.push(out);
+    }
+
+    Ok(outputs)
+}
+
+pub fn wlr_randr_apply(outputs: &[Output]) -> Result<(), String> {
+    let mut cmd = Command::new("wlr-randr");
+
+    for out in outputs {
+        cmd.arg("--output").arg(&out.name);
+        if out.enabled {
+            cmd.arg("--on");
+            cmd.arg("--pos")
+                .arg(format!("{},{}", out.position.0, out.position.1));
+            cmd.arg("--scale").arg(format!("{:.6}", out.scale));
+            cmd.arg("--transform").arg(&out.transform);
+
+            if let Some(current_mode) = out.modes.iter().find(|m| m.current) {
+                cmd.arg("--mode").arg(format!(
+                    "{}x{}@{:.3}",
+                    current_mode.width, current_mode.height, current_mode.refresh_rate
+                ));
+            }
+        } else {
+            cmd.arg("--off");
+        }
+    }
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("Failed to run wlr-randr: {}", e))?;
+    if !status.success() {
+        return Err("wlr-randr exited with non-zero status".to_string());
+    }
+    Ok(())
+}
+
+pub fn wlr_randr_save(
+    outputs: &[Output],
+    settings: &crate::settings::AppSettings,
+) -> Result<(), String> {
+    let mut script = String::from("# Generated by mango-display\n\n");
+
+    for out in outputs {
+        if out.enabled {
+            let rr = match out.transform.as_str() {
+                "normal" => 0,
+                "90" => 1,
+                "180" => 2,
+                "270" => 3,
+                "flipped" => 4,
+                "flipped-90" => 5,
+                "flipped-180" => 6,
+                "flipped-270" => 7,
+                _ => 0,
+            };
+
+            let mut w = 0;
+            let mut h = 0;
+            let mut r = 0.0;
+
+            if let Some(current_mode) = out.modes.iter().find(|m| m.current) {
+                w = current_mode.width;
+                h = current_mode.height;
+                r = current_mode.refresh_rate;
+            }
+
+            script.push_str(&format!(
+                "monitorrule=name:{},width:{},height:{},refresh:{:.6},x:{},y:{},scale:{:.6},rr:{}\n",
+                out.name, w, h, r, out.position.0, out.position.1, out.scale, rr
+            ));
+        } else {
+            // This is just a placeholder as currently (according to the https://mangowc.vercel.app/docs/configuration/monitors)
+            // there is no way to disable a monitor
+            // TODO: Update this if there is a way to disable a monitor
+        }
+    }
+
+    let expand_path = |p: &str| -> PathBuf {
+        if p.starts_with("~/") {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(p.strip_prefix("~/").unwrap())
+        } else {
+            PathBuf::from(p)
+        }
+    };
+
+    let monitors_path = expand_path(&settings.monitors_conf_path);
+    if let Some(parent) = monitors_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create monitors dir: {}", e))?;
+    }
+
+    fs::write(&monitors_path, script)
+        .map_err(|e| format!("Failed to write monitors config: {}", e))?;
+
+    if settings.auto_append_source {
+        let config_path = expand_path(&settings.config_conf_path);
+        let source_line = format!("source={}", monitors_path.display());
+        let source_line_spaced = format!("source = {}", monitors_path.display());
+        let needs_source = if config_path.exists() {
+            let content = fs::read_to_string(&config_path)
+                .map_err(|e| format!("Failed to read config file: {}", e))?;
+            !content.contains(&source_line) && !content.contains(&source_line_spaced)
+        } else {
+            true
+        };
+
+        if needs_source {
+            use std::io::Write;
+            if let Some(parent) = config_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&config_path)
+                .map_err(|e| format!("Failed to open config file: {}", e))?;
+
+            writeln!(file, "\n{}", source_line)
+                .map_err(|e| format!("Failed to write config file source override: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_wlr_randr() {
+        let sample = r#"eDP-1 "Unknown Unknown Unknown"
+  Make: Unknown
+  Model: Unknown
+  Serial: Unknown
+  Physical size: 340x190 mm
+  Enabled: yes
+  Position: 0,0
+  Scale: 1.000000
+  Transform: normal
+  Modes:
+    1920x1080 px, 60.000000 Hz (preferred, current)
+DP-1 "Acer Acer KG271 C 28243AAB48T0"
+  Make: Acer
+  Model: Acer KG271 C
+  Serial: 28243AAB48T0
+  Physical size: 600x340 mm
+  Enabled: no
+  Position: 1920,0
+  Scale: 1.500000
+  Transform: 90
+  Modes:
+    1920x1080 px, 144.000000 Hz (preferred)
+    1920x1080 px, 60.000000 Hz
+"#;
+        let outputs = parse_wlr_randr_output(sample).expect("Failed to parse");
+        assert_eq!(outputs.len(), 2);
+
+        let out1 = &outputs[0];
+        assert_eq!(out1.name, "eDP-1");
+        assert_eq!(out1.enabled, true);
+        assert_eq!(out1.position, (0, 0));
+        assert_eq!(out1.scale, 1.0);
+        assert_eq!(out1.transform, "normal");
+        assert_eq!(out1.modes.len(), 1);
+        assert_eq!(out1.modes[0].width, 1920);
+        assert_eq!(out1.modes[0].refresh_rate, 60.0);
+        assert!(out1.modes[0].current);
+        assert!(out1.modes[0].preferred);
+
+        let out2 = &outputs[1];
+        assert_eq!(out2.name, "DP-1");
+        assert_eq!(out2.make, "Acer");
+        assert_eq!(out2.enabled, false);
+        assert_eq!(out2.position, (1920, 0));
+        assert_eq!(out2.scale, 1.5);
+        assert_eq!(out2.transform, "90");
+        assert_eq!(out2.modes.len(), 2);
+        assert_eq!(out2.modes[0].width, 1920);
+        assert_eq!(out2.modes[0].refresh_rate, 144.0);
+        assert!(out2.modes[0].preferred);
+        assert!(!out2.modes[0].current);
+        assert!(!out2.modes[1].current);
+    }
+}
