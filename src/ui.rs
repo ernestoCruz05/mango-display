@@ -217,14 +217,16 @@ impl MangoDisplay {
         if let Some(idx) = self.selected_output_idx {
             let out = &self.outputs[idx];
 
-            sidebar = sidebar.push(
-                row![
-                    Space::new().width(100.0),
-                    checkbox(out.enabled).on_toggle(Message::EnabledToggled),
-                    text("Enabled")
-                ]
-                .spacing(10),
-            );
+            if self.outputs.len() > 1 {
+                sidebar = sidebar.push(
+                    row![
+                        Space::new().width(100.0),
+                        checkbox(out.enabled).on_toggle(Message::EnabledToggled),
+                        text("Enabled")
+                    ]
+                    .spacing(10),
+                );
+            }
 
             let label_width = 100.0;
 
