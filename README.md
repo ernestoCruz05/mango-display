@@ -7,6 +7,7 @@ A GUI monitor layout manager for [mangowc](https://mangowc.vercel.app/). Designe
 * **Visual Canvas**: Drag and drop your screen layouts efficiently with magnetic edge snapping.
 * **Hardware Configurations**: Manipulate DPI Scaling, Refresh Rates, Resolutions, and Orientation transforms.
 * **Live Previews**: Temporarily apply your changes to experiment with `wlr-randr` configurations.
+* **Restore Default**: Safely revert to your base configuration. MDisplay takes a frozen snapshot of your pre-existing monitor rules the very first time it runs, allowing you to easily undo all layout changes without affecting your other `mangowc` settings.
 * **Persistent Saving**: Save the finalized `monitorrule` lines directly to `~/.config/mango/monitors.conf`, automatically appended to your `config.conf`.
 
 ## Requirements
