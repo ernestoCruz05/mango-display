@@ -8,7 +8,7 @@ use iced::{
 };
 use std::str::FromStr;
 
-use crate::backend::{Output, OutputMode, wlr_randr_apply, wlr_randr_get_outputs, wlr_randr_save};
+use crate::backend::{Output, OutputMode, wlr_randr_apply, wlr_randr_get_outputs, wlr_randr_restore_default, wlr_randr_save};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -28,6 +28,7 @@ pub enum Message {
     TransformSelected(String),
     ApplyClicked,
     SaveClicked,
+    RestoreDefaultClicked,
 }
 
 pub struct MangoDisplay {
@@ -215,6 +216,12 @@ impl MangoDisplay {
                     Err(e) => self.status_message = Some(format!("Save error: {}", e)),
                 }
             }
+            Message::RestoreDefaultClicked => {
+                match wlr_randr_restore_default(&self.settings) {
+                    Ok(()) => self.status_message = Some("Restored to default config!".to_string()),
+                    Err(e) => self.status_message = Some(format!("Restore error: {}", e)),
+                }
+            }
         }
         Task::none()
     }
@@ -400,7 +407,8 @@ impl MangoDisplay {
 
         let actions = row![
             button("Apply").on_press(Message::ApplyClicked),
-            button("Save").on_press(Message::SaveClicked)
+            button("Save").on_press(Message::SaveClicked),
+            button("Restore Default").on_press(Message::RestoreDefaultClicked),
         ]
         .spacing(10);
 

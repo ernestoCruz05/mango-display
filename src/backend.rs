@@ -221,6 +221,93 @@ pub fn wlr_randr_save(
     };
 
     let monitors_path = expand_path(&settings.monitors_conf_path);
+    let bak_path = expand_path(&settings.monitors_bak_path);
+    let config_path = expand_path(&settings.config_conf_path);
+
+    // --- First-time backup: snapshot original monitorrule lines with source tracking ---
+    // We scan config.conf AND every file it sources, tracking which file each rule came from.
+    // The .bak file is JSON so we can restore rules back to their original locations.
+    if !bak_path.exists() {
+        if let Some(parent) = bak_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let collect_monitorrules = |path: &PathBuf| -> Vec<String> {
+            fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    t.starts_with("monitorrule=") || t.starts_with("monitorrule =")
+                })
+                .map(|l| l.to_string())
+                .collect()
+        };
+
+        let resolve_source = |raw: &str| -> PathBuf {
+            if raw.starts_with("~/") || raw.starts_with('/') {
+                expand_path(raw)
+            } else {
+                config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("/"))
+                    .join(raw)
+            }
+        };
+
+        // Compact the path back to a tilde form for portability
+        let to_portable = |p: &PathBuf| -> String {
+            if let Some(home) = dirs::home_dir() {
+                if let Ok(suffix) = p.strip_prefix(&home) {
+                    return format!("~/{}", suffix.display());
+                }
+            }
+            p.display().to_string()
+        };
+
+        let mut backup_entries: Vec<serde_json::Value> = Vec::new();
+
+        if config_path.exists() {
+            // Rules directly in config.conf
+            let direct_rules = collect_monitorrules(&config_path);
+            if !direct_rules.is_empty() {
+                backup_entries.push(serde_json::json!({
+                    "source_file": to_portable(&config_path),
+                    "rules": direct_rules,
+                }));
+            }
+
+            // Also follow any source= lines
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                for line in content.lines() {
+                    let t = line.trim();
+                    let sourced_path_str = if t.starts_with("source=") {
+                        Some(t.trim_start_matches("source=").trim())
+                    } else if t.starts_with("source =") {
+                        Some(t.trim_start_matches("source =").trim())
+                    } else {
+                        None
+                    };
+
+                    if let Some(raw) = sourced_path_str {
+                        let sourced = resolve_source(raw);
+                        let rules = collect_monitorrules(&sourced);
+                        if !rules.is_empty() {
+                            backup_entries.push(serde_json::json!({
+                                "source_file": to_portable(&sourced),
+                                "rules": rules,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        let backup_json = serde_json::json!({ "entries": backup_entries });
+        fs::write(&bak_path, serde_json::to_string_pretty(&backup_json).unwrap_or_default())
+            .map_err(|e| format!("Failed to write monitors.bak: {}", e))?;
+    }
+
     if let Some(parent) = monitors_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create monitors dir: {}", e))?;
     }
@@ -229,13 +316,17 @@ pub fn wlr_randr_save(
         .map_err(|e| format!("Failed to write monitors config: {}", e))?;
 
     if settings.auto_append_source {
-        let config_path = expand_path(&settings.config_conf_path);
-        let source_line = format!("source={}", monitors_path.display());
-        let source_line_spaced = format!("source = {}", monitors_path.display());
+        // Use the tilde path from settings (portable, good for dotfiles)
+        let source_line_tilde = format!("source={}", settings.monitors_conf_path);
+        // Also recognise the expanded form in case it was written by an older version
+        let source_line_abs = format!("source={}", monitors_path.display());
+        let source_line_abs_spaced = format!("source = {}", monitors_path.display());
         let needs_source = if config_path.exists() {
             let content = fs::read_to_string(&config_path)
                 .map_err(|e| format!("Failed to read config file: {}", e))?;
-            !content.contains(&source_line) && !content.contains(&source_line_spaced)
+            !content.contains(&source_line_tilde)
+                && !content.contains(&source_line_abs)
+                && !content.contains(&source_line_abs_spaced)
         } else {
             true
         };
@@ -251,9 +342,122 @@ pub fn wlr_randr_save(
                 .open(&config_path)
                 .map_err(|e| format!("Failed to open config file: {}", e))?;
 
-            writeln!(file, "\n{}", source_line)
+            writeln!(file, "\n{}", source_line_tilde)
                 .map_err(|e| format!("Failed to write config file source override: {}", e))?;
         }
+    }
+
+    Ok(())
+}
+
+pub fn wlr_randr_restore_default(settings: &crate::settings::AppSettings) -> Result<(), String> {
+    let expand_path = |p: &str| -> PathBuf {
+        if p.starts_with("~/") {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/"))
+                .join(p.strip_prefix("~/").unwrap())
+        } else {
+            PathBuf::from(p)
+        }
+    };
+
+    let config_path = expand_path(&settings.config_conf_path);
+    let monitors_path = expand_path(&settings.monitors_conf_path);
+    let bak_path = expand_path(&settings.monitors_bak_path);
+
+    // Parse the JSON backup
+    let backup: serde_json::Value = if bak_path.exists() {
+        let raw = fs::read_to_string(&bak_path)
+            .map_err(|e| format!("Failed to read monitors.bak: {}", e))?;
+        serde_json::from_str(&raw).unwrap_or(serde_json::json!({ "entries": [] }))
+    } else {
+        serde_json::json!({ "entries": [] })
+    };
+
+    let entries = backup["entries"].as_array().cloned().unwrap_or_default();
+
+    // Helper to strip all monitorrule lines from a file's content
+    let strip_monitorrules = |content: &str| -> String {
+        content
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.starts_with("monitorrule=") && !t.starts_with("monitorrule =")
+            })
+            .map(|l| format!("{}\n", l))
+            .collect()
+    };
+
+    // Step 1: Clean config.conf — remove monitorrule lines AND the source= line mango added
+    if config_path.exists() {
+        let source_line_tilde = format!("source={}", settings.monitors_conf_path);
+        let source_line_abs = format!("source={}", monitors_path.display());
+        let source_line_abs_spaced = format!("source = {}", monitors_path.display());
+
+        let content = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config.conf: {}", e))?;
+
+        let cleaned: String = content
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.starts_with("monitorrule=")
+                    && !t.starts_with("monitorrule =")
+                    && t != source_line_tilde.as_str()
+                    && t != source_line_abs.as_str()
+                    && t != source_line_abs_spaced.as_str()
+            })
+            .map(|l| format!("{}\n", l))
+            .collect();
+
+        fs::write(&config_path, cleaned)
+            .map_err(|e| format!("Failed to write config.conf: {}", e))?;
+    }
+
+    // Step 2: For each backup entry, restore rules into their original source file
+    for entry in &entries {
+        if let (Some(source_file), Some(rules)) =
+            (entry["source_file"].as_str(), entry["rules"].as_array())
+        {
+            let target_path = expand_path(source_file);
+            let rules_block: String = rules
+                .iter()
+                .filter_map(|r| r.as_str())
+                .map(|r| format!("{}\n", r))
+                .collect();
+
+            if rules_block.is_empty() {
+                continue;
+            }
+
+            if target_path.exists() {
+                // Strip any existing monitorrule lines first, then append originals
+                let content = fs::read_to_string(&target_path).unwrap_or_default();
+                let cleaned = strip_monitorrules(&content);
+                let restored = format!("{}\n{}", cleaned.trim_end(), rules_block);
+                fs::write(&target_path, restored)
+                    .map_err(|e| format!("Failed to restore rules to {}: {}", source_file, e))?;
+            } else {
+                // The file doesn't exist anymore, write it fresh
+                if let Some(parent) = target_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                fs::write(&target_path, rules_block)
+                    .map_err(|e| format!("Failed to create {}: {}", source_file, e))?;
+            }
+        }
+    }
+
+    // Step 3: Delete monitors.conf (only if it wasn't in the backup — i.e., mango created it)
+    let monitors_was_backed_up = entries.iter().any(|e| {
+        e["source_file"]
+            .as_str()
+            .map(|s| expand_path(s) == monitors_path)
+            .unwrap_or(false)
+    });
+    if monitors_path.exists() && !monitors_was_backed_up {
+        fs::remove_file(&monitors_path)
+            .map_err(|e| format!("Failed to delete monitors.conf: {}", e))?;
     }
 
     Ok(())

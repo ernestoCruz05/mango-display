@@ -9,6 +9,8 @@ pub struct AppSettings {
     pub config_conf_path: String,
     #[serde(default)]
     pub auto_append_source: bool,
+    #[serde(default)]
+    pub monitors_bak_path: String,
 }
 
 impl Default for AppSettings {
@@ -17,6 +19,7 @@ impl Default for AppSettings {
             monitors_conf_path: "~/.config/mango/monitors.conf".to_string(),
             config_conf_path: "~/.config/mango/config.conf".to_string(),
             auto_append_source: true,
+            monitors_bak_path: "~/.config/mango/monitors.bak".to_string(),
         }
     }
 }
