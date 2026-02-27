@@ -224,9 +224,6 @@ pub fn wlr_randr_save(
     let bak_path = expand_path(&settings.monitors_bak_path);
     let config_path = expand_path(&settings.config_conf_path);
 
-    // --- First-time backup: snapshot original monitorrule lines with source tracking ---
-    // We scan config.conf AND every file it sources, tracking which file each rule came from.
-    // The .bak file is JSON so we can restore rules back to their original locations.
     if !bak_path.exists() {
         if let Some(parent) = bak_path.parent() {
             let _ = fs::create_dir_all(parent);
