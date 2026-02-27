@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Mango Display
+Name=MDisplay
 GenericName=Monitor Manager
 Comment=Wayland monitor layout manager for mangowc
-Exec=mango-display
+Exec=/home/faky/.cargo/bin/mdisplay
 Icon=video-display
 Terminal=false
 Type=Application

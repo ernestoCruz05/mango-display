@@ -1,6 +1,6 @@
 [package]
-name = "mango-display"
-version = "0.1.0"
+name = "mdisplay"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]

@@ -25,7 +25,7 @@ impl AppSettings {
     fn settings_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("mango-display")
+            .join("mdisplay")
             .join("settings.json")
     }
 
