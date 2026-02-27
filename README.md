@@ -1,4 +1,4 @@
-# Mango Display
+# MDisplay
 
 A GUI monitor layout manager for [mangowc](https://mangowc.vercel.app/). Designed to be similar to tools like `nwg-displays` or `wdisplays`.
 
@@ -11,7 +11,7 @@ A GUI monitor layout manager for [mangowc](https://mangowc.vercel.app/). Designe
 
 ## Requirements
 
-Mango Display relies on `wlr-randr` to query the currently active outputs and temporarily apply modifications. 
+MDisplay relies on `wlr-randr` to query the currently active outputs and temporarily apply modifications. 
 
 Before running, ensure you have:
 * The `mangowc` Wayland compositor installed.
@@ -23,40 +23,40 @@ Before running, ensure you have:
 Clone the repository and compile using Cargo:
 
 ```bash
-git clone https://github.com/ernestoCruz05/mango-display.git
-cd mango-display
+git clone https://github.com/ernestoCruz05/mdisplay.git
+cd mdisplay
 cargo build --release
 ```
 
-The compiled binary will be located in `target/release/mango-display`.
+The compiled binary will be located in `target/release/mdisplay`.
 
 If you install it via `cargo install --path .`, the executable is placed in your system's cargo bin path (typically `~/.cargo/bin`).
 
 ### Application Launcher (Rofi / Wofi / Application Menu)
 
-To make Mango Display appear in your application launcher (like Rofi), copy the provided `.desktop` file to your local applications folder:
+To make MDisplay appear in your application launcher (like Rofi), copy the provided `.desktop` file to your local applications folder:
 
 ```bash
 mkdir -p ~/.local/share/applications
-cp mango-display.desktop ~/.local/share/applications/
+cp mdisplay.desktop ~/.local/share/applications/
 ```
 
 ## Usage
 
-You can customize where `mango-display` saves your hardware configurations, and whether it automatically links them, by passing arguments before launching the GUI. These preferences are permanently saved to `~/.config/mango-display/settings.json`.
+You can customize where `mdisplay` saves your hardware configurations, and whether it automatically links them, by passing arguments before launching the GUI. These preferences are permanently saved to `~/.config/mdisplay/settings.json`.
 
 ```bash
 # Check current build version
-mango-display --version
+mdisplay --version
 
 # Set a custom save path for the monitors config
-mango-display --set-monitors-path ~/.config/some_folder/my_custom_monitors.conf
+mdisplay --set-monitors-path ~/.config/some_folder/my_custom_monitors.conf
 
 # Set a custom target for the main Wayland config appending
-mango-display --set-config-path ~/.config/some_other_folder/config.conf
+mdisplay --set-config-path ~/.config/some_other_folder/config.conf
 
 # Disable auto-appending the source include line completely (you will need to manually add it, if you want it for some reason)
-mango-display --auto-append-source false
+mdisplay --auto-append-source false
 ```
 
 ## Configuration Output Files
