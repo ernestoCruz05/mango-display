@@ -2,7 +2,7 @@
 Name=MDisplay
 GenericName=Monitor Manager
 Comment=Wayland monitor layout manager for mangowc
-Exec=/home/faky/.cargo/bin/mdisplay
+Exec=mdisplay
 Icon=video-display
 Terminal=false
 Type=Application

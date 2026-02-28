@@ -21,26 +21,26 @@ Before running, ensure you have:
 
 ## Installation
 
-Clone the repository and compile using Cargo:
+The easiest way to install MDisplay and make it appear in application launchers (like Rofi or Wofi) is to use the provided install script. This will compile the program and set up the desktop entry automatically:
 
 ```bash
 git clone https://github.com/ernestoCruz05/mdisplay.git
 cd mdisplay
-cargo build --release
+./install.sh
 ```
 
-The compiled binary will be located in `target/release/mdisplay`.
+### Manual Installation
 
-If you install it via `cargo install --path .`, the executable is placed in your system's cargo bin path (typically `~/.cargo/bin`).
-
-### Application Launcher (Rofi / Wofi / Application Menu)
-
-To make MDisplay appear in your application launcher (like Rofi), copy the provided `.desktop` file to your local applications folder:
+Alternatively, you can manually compile using Cargo and copy the `.desktop` file:
 
 ```bash
+cargo install --path .
 mkdir -p ~/.local/share/applications
 cp mdisplay.desktop ~/.local/share/applications/
 ```
+
+> [!NOTE]
+> MDisplay is installed to Cargo's default binary directory. If your terminal or application launcher says "command not found", ensure `~/.cargo/bin` is in your `PATH`. You can add it by putting `export PATH="$HOME/.cargo/bin:$PATH"` in your `~/.bashrc` or `~/.zshrc`.
 
 ## Usage
 
