@@ -21,6 +21,9 @@ struct Args {
         help = "Whether to auto-append 'source=./monitors.conf' to config.conf (true/false)"
     )]
     auto_append_source: Option<bool>,
+
+    #[arg(long, help = "Reset all settings to their defaults")]
+    reset_settings: bool,
 }
 
 fn main() -> iced::Result {
@@ -29,6 +32,15 @@ fn main() -> iced::Result {
     let mut exit_after_args = false;
     let mut app_settings = settings::AppSettings::load();
 
+    if args.reset_settings {
+        let default_settings = settings::AppSettings::default();
+        if let Err(e) = default_settings.save() {
+            eprintln!("Error resetting settings: {}", e);
+            std::process::exit(1);
+        }
+        println!("Settings reset to defaults.");
+        return Ok(());
+    }
     if let Some(path) = args.set_monitors_path {
         app_settings.monitors_conf_path = path;
         exit_after_args = true;

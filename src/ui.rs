@@ -8,7 +8,10 @@ use iced::{
 };
 use std::str::FromStr;
 
-use crate::backend::{Output, OutputMode, wlr_randr_apply, wlr_randr_get_outputs, wlr_randr_restore_default, wlr_randr_save};
+use crate::backend::{
+    Output, OutputMode, wlr_randr_apply, wlr_randr_get_outputs, wlr_randr_restore_default,
+    wlr_randr_save,
+};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -29,6 +32,7 @@ pub enum Message {
     ApplyClicked,
     SaveClicked,
     RestoreDefaultClicked,
+    ResolutionSizeSelected(String),
 }
 
 pub struct MangoDisplay {
@@ -182,6 +186,27 @@ impl MangoDisplay {
                     self.layout_cache.clear();
                 }
             }
+
+            Message::ResolutionSizeSelected(res_str) => {
+                if let Some(idx) = self.selected_output_idx {
+                    let parts: Vec<&str> = res_str.split('x').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(w), Ok(h)) = (i32::from_str(parts[0]), i32::from_str(parts[1])) {
+                            for m in &mut self.outputs[idx].modes {
+                                m.current = false;
+                            }
+                            if let Some(mode) = self.outputs[idx]
+                                .modes
+                                .iter_mut()
+                                .find(|m| m.width == w && m.height == h)
+                            {
+                                mode.current = true;
+                            }
+                            self.layout_cache.clear();
+                        }
+                    }
+                }
+            }
             Message::ResolutionSelected(res_idx) => {
                 if let Some(idx) = self.selected_output_idx {
                     for m in &mut self.outputs[idx].modes {
@@ -216,12 +241,10 @@ impl MangoDisplay {
                     Err(e) => self.status_message = Some(format!("Save error: {}", e)),
                 }
             }
-            Message::RestoreDefaultClicked => {
-                match wlr_randr_restore_default(&self.settings) {
-                    Ok(()) => self.status_message = Some("Restored to default config!".to_string()),
-                    Err(e) => self.status_message = Some(format!("Restore error: {}", e)),
-                }
-            }
+            Message::RestoreDefaultClicked => match wlr_randr_restore_default(&self.settings) {
+                Ok(()) => self.status_message = Some("Restored to default config!".to_string()),
+                Err(e) => self.status_message = Some(format!("Restore error: {}", e)),
+            },
         }
         Task::none()
     }
@@ -331,46 +354,56 @@ impl MangoDisplay {
                     preferred: false,
                 });
 
-            let row_size = row![
-                container(text("Size").size(14)).width(label_width),
-                text_input("", &cm.width.to_string()).width(Length::Fixed(60.0)),
-                button("-"),
-                button("+"),
-                text("x"),
-                text_input("", &cm.height.to_string()).width(Length::Fixed(60.0)),
-                button("-"),
-                button("+"),
-                button("!"),
+            let mut unique_resolutions: Vec<String> = Vec::new();
+            for m in &out.modes {
+                let res = format!("{}x{}", m.width, m.height);
+                if !unique_resolutions.contains(&res) {
+                    unique_resolutions.push(res);
+                }
+            }
+            let selected_resolution = Some(format!("{}x{}", cm.width, cm.height));
+            let res_options = unique_resolutions.clone();
+            let pick_res = pick_list(res_options, selected_resolution, |s| {
+                Message::ResolutionSizeSelected(s)
+            })
+            .width(Length::Fixed(200.0));
+
+            let row_res = row![
+                container(text("Resolution").size(14)).width(label_width),
+                pick_res
             ]
             .spacing(5)
             .align_y(alignment::Vertical::Center);
-            sidebar = sidebar.push(row_size);
+            sidebar = sidebar.push(row_res);
 
-            let mut current_res_idx = 0;
-            let mut resolutions = Vec::new();
+            let mut current_rr_idx = 0;
+            let mut rr_labels = Vec::new();
+            let mut rr_mode_indices = Vec::new();
             for (i, m) in out.modes.iter().enumerate() {
-                resolutions.push(format!("{:.3}", m.refresh_rate));
-                if m.current {
-                    current_res_idx = i;
+                if m.width == cm.width && m.height == cm.height {
+                    rr_labels.push(format!("{:.3}", m.refresh_rate));
+                    rr_mode_indices.push(i);
+                    if m.current {
+                        current_rr_idx = rr_labels.len() - 1;
+                    }
                 }
             }
-            let res_options = resolutions.clone();
-            let selected_res = if current_res_idx < resolutions.len() {
-                Some(resolutions[current_res_idx].clone())
+            let rr_options = rr_labels.clone();
+            let selected_rr = if current_rr_idx < rr_labels.len() {
+                Some(rr_labels[current_rr_idx].clone())
             } else {
                 None
             };
-            let pick_rr = pick_list(res_options, selected_res, move |selected: String| {
-                let i = resolutions.iter().position(|r| *r == selected).unwrap_or(0);
-                Message::ResolutionSelected(i)
+            let pick_rr = pick_list(rr_options, selected_rr, move |selected: String| {
+                let local_idx = rr_labels.iter().position(|r| *r == selected).unwrap_or(0);
+                let mode_idx = rr_mode_indices[local_idx];
+                Message::ResolutionSelected(mode_idx)
             })
             .width(Length::Fixed(100.0));
 
             let row_rr = row![
                 container(text("Refresh Rate").size(14)).width(label_width),
                 pick_rr,
-                button("-"),
-                button("+"),
                 text("Hz").size(14)
             ]
             .spacing(5)
