@@ -1,13 +1,14 @@
 # MDisplay
 
-A GUI monitor layout manager for [mangowc](https://mangowc.vercel.app/). Designed to be similar to tools like `nwg-displays` or `wdisplays`.
+A GUI monitor layout manager for [mangowm](https://mangowm.github.io/). Designed to be similar to tools like `nwg-displays` or `wdisplays`.
 
 ## Features
 
 * **Visual Canvas**: Drag and drop your screen layouts efficiently with magnetic edge snapping.
-* **Hardware Configurations**: Manipulate DPI Scaling, Refresh Rates, Resolutions, and Orientation transforms.
-* **Live Previews**: Temporarily apply your changes to experiment with custom layout configurations.
-* **Restore Default**: Safely revert to your base configuration. MDisplay takes a frozen snapshot of your pre-existing monitor rules the very first time it runs, allowing you to easily undo all layout changes without affecting your other `mangowc` settings.
+* **Hardware Configurations**: Manipulate DPI Scaling, Refresh Rates, Resolutions, Orientation transforms, and Adaptive Sync (VRR).
+* **Safe Live Previews**: Temporarily apply your changes to experiment with custom layout configurations. After every apply, a 15-second countdown lets you confirm with **Keep** — or automatically reverts to the previous configuration, so a bad mode can never lock you out.
+* **Hotplug Aware**: Monitors plugged or unplugged while the app is open show up immediately on the canvas, without clobbering your unsaved edits.
+* **Restore Default**: Safely revert to your base configuration. MDisplay takes a frozen snapshot of your pre-existing monitor rules the very first time it runs, allowing you to easily undo all layout changes without affecting your other `mangowm` settings.
 * **Persistent Saving**: Save the finalized `monitorrule` lines directly to `~/.config/mango/monitors.conf`, automatically appended to your `config.conf`.
 
 ## Requirements
@@ -15,7 +16,7 @@ A GUI monitor layout manager for [mangowc](https://mangowc.vercel.app/). Designe
 MDisplay relies on the `wlr-output-management-unstable-v1` Wayland protocol to query the currently active outputs and apply modifications. 
 
 Before running, ensure you have:
-* The `mangowc` Wayland compositor installed (or any wlroots-based compositor that supports the protocol).
+* The `mangowm` Wayland compositor installed (or any wlroots-based compositor that supports the protocol).
 * Rust toolchain (Cargo, rustc) to compile the application.
 
 ## Installation
@@ -61,7 +62,7 @@ mdisplay --auto-append-source false
 
 ## Configuration Output Files
 
-The **Save** function integrates natively with mangowc config systems. Output format generally matches:
+The **Save** function integrates natively with mangowm config systems. Output format generally matches:
 ```conf
-monitorrule=name:DP-1,width:1920,height:1080,refresh:144.000000,x:0,y:0,scale:1.000000,rr:0
+monitorrule=name:DP-1,width:1920,height:1080,refresh:144.000000,x:0,y:0,scale:1.000000,rr:0,vrr:0
 ```

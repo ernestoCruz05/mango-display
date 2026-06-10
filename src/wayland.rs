@@ -21,6 +21,7 @@ struct HeadBuilder {
     scale: f32,
     transform: String,
     enabled: bool,
+    vrr: bool,
     modes: Vec<wayland_client::backend::ObjectId>,
     current_mode: Option<wayland_client::backend::ObjectId>,
     head_proxy: Option<zwlr_output_head_v1::ZwlrOutputHeadV1>,
@@ -39,6 +40,7 @@ impl Default for HeadBuilder {
             scale: 1.0,
             transform: "normal".to_string(),
             enabled: true,
+            vrr: false,
             modes: Vec::new(),
             current_mode: None,
             head_proxy: None,
@@ -141,6 +143,14 @@ impl Dispatch<zwlr_output_head_v1::ZwlrOutputHeadV1, ()> for WaylandState {
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if let zwlr_output_head_v1::Event::Finished = event {
+            state.heads.remove(&proxy.id());
+            if proxy.version() >= 3 {
+                proxy.release();
+            }
+            return;
+        }
+
         let id = proxy.id();
         let builder = match state.heads.get_mut(&id) {
             Some(b) => b,
@@ -190,6 +200,10 @@ impl Dispatch<zwlr_output_head_v1::ZwlrOutputHeadV1, ()> for WaylandState {
             zwlr_output_head_v1::Event::SerialNumber { serial_number } => {
                 builder.serial = serial_number;
             }
+            zwlr_output_head_v1::Event::AdaptiveSync { state } => {
+                builder.vrr = state.into_result().ok()
+                    == Some(zwlr_output_head_v1::AdaptiveSyncState::Enabled);
+            }
             _ => {}
         }
     }
@@ -209,6 +223,18 @@ impl Dispatch<zwlr_output_mode_v1::ZwlrOutputModeV1, ()> for WaylandState {
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if let zwlr_output_mode_v1::Event::Finished = event {
+            let id = proxy.id();
+            state.modes.remove(&id);
+            for head in state.heads.values_mut() {
+                head.modes.retain(|m| *m != id);
+            }
+            if proxy.version() >= 3 {
+                proxy.release();
+            }
+            return;
+        }
+
         let id = proxy.id();
         let builder = match state.modes.get_mut(&id) {
             Some(b) => b,
@@ -324,9 +350,13 @@ pub fn fetch_outputs() -> Result<Vec<Output>, String> {
         .roundtrip(&mut state)
         .map_err(|e| e.to_string())?;
 
+    Ok(state_to_outputs(&state))
+}
+
+fn state_to_outputs(state: &WaylandState) -> Vec<Output> {
     let mut outputs = Vec::new();
 
-    for (_, head_builder) in &state.heads {
+    for head_builder in state.heads.values() {
         let mut modes = Vec::new();
         for mode_id in &head_builder.modes {
             if let Some(mode_builder) = state.modes.get(mode_id) {
@@ -353,10 +383,51 @@ pub fn fetch_outputs() -> Result<Vec<Output>, String> {
             transform: head_builder.transform.clone(),
             modes,
             enabled: head_builder.enabled,
+            vrr: head_builder.vrr,
         });
     }
 
-    Ok(outputs)
+    outputs
+}
+
+pub fn watch_outputs(
+    mut sender: iced::futures::channel::mpsc::Sender<Vec<Output>>,
+) -> Result<(), String> {
+    let conn =
+        Connection::connect_to_env().map_err(|e| format!("Failed to connect to Wayland: {}", e))?;
+
+    let mut event_queue = conn.new_event_queue();
+    let qhandle = event_queue.handle();
+    conn.display().get_registry(&qhandle, ());
+
+    let mut state = WaylandState {
+        output_manager: None,
+        heads: HashMap::new(),
+        modes: HashMap::new(),
+        serial: None,
+        apply_status: None,
+    };
+
+    event_queue
+        .roundtrip(&mut state)
+        .map_err(|e| e.to_string())?;
+    if state.output_manager.is_none() {
+        return Err("Compositor does not support wlr-output-management-unstable-v1".to_string());
+    }
+
+    let mut last_sent_serial: Option<u32> = None;
+    loop {
+        event_queue
+            .blocking_dispatch(&mut state)
+            .map_err(|e| e.to_string())?;
+
+        if state.serial.is_some() && state.serial != last_sent_serial {
+            last_sent_serial = state.serial;
+            if sender.try_send(state_to_outputs(&state)).is_err() {
+                return Ok(());
+            }
+        }
+    }
 }
 
 pub fn apply_outputs(outputs: &[Output]) -> Result<(), String> {
@@ -411,6 +482,14 @@ pub fn apply_outputs(outputs: &[Output]) -> Result<(), String> {
                 head_config.set_position(out.position.0, out.position.1);
                 head_config.set_scale(out.scale as f64);
                 head_config.set_transform(string_to_transform(&out.transform));
+
+                if proxy.version() >= 4 {
+                    head_config.set_adaptive_sync(if out.vrr {
+                        zwlr_output_head_v1::AdaptiveSyncState::Enabled
+                    } else {
+                        zwlr_output_head_v1::AdaptiveSyncState::Disabled
+                    });
+                }
 
                 if let Some(active_mode) = out.modes.iter().find(|m| m.current) {
                     let mut found_proxy = None;

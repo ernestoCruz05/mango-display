@@ -11,6 +11,35 @@ use std::str::FromStr;
 use crate::backend::{Output, OutputMode, restore_default_config, save_config};
 use crate::wayland::{apply_outputs, fetch_outputs};
 
+const REVERT_TIMEOUT_SECS: u32 = 15;
+
+#[derive(Debug)]
+struct PendingApply {
+    seconds_left: u32,
+    generation: u64,
+}
+
+fn hotplug_stream() -> impl iced::futures::Stream<Item = Vec<Output>> {
+    iced::stream::channel(8, async |sender| {
+        std::thread::spawn(move || {
+            if let Err(e) = crate::wayland::watch_outputs(sender) {
+                eprintln!("mdisplay: hotplug watcher stopped: {}", e);
+            }
+        });
+        std::future::pending::<()>().await;
+    })
+}
+
+fn tick_task(generation: u64) -> Task<Message> {
+    Task::perform(
+        async move {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            generation
+        },
+        Message::RevertTick,
+    )
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     MonitorClicked(usize),
@@ -31,10 +60,15 @@ pub enum Message {
     SaveClicked,
     RestoreDefaultClicked,
     ResolutionSizeSelected(String),
+    RevertTick(u64),
+    KeepApplied,
+    OutputsChanged(Vec<Output>),
+    VrrToggled(bool),
 }
 
 pub struct MangoDisplay {
     outputs: Vec<Output>,
+    baseline: Vec<Output>,
     selected_output_idx: Option<usize>,
     layout_cache: Cache,
     x_input: String,
@@ -42,6 +76,8 @@ pub struct MangoDisplay {
     scale_input: String,
     pub settings: crate::settings::AppSettings,
     status_message: Option<String>,
+    pending_apply: Option<PendingApply>,
+    apply_generation: u64,
 }
 
 impl Default for MangoDisplay {
@@ -49,6 +85,7 @@ impl Default for MangoDisplay {
         let outputs = fetch_outputs().unwrap_or_default();
         let selected_output_idx = if !outputs.is_empty() { Some(0) } else { None };
         let mut app = Self {
+            baseline: outputs.clone(),
             outputs,
             selected_output_idx,
             layout_cache: Cache::default(),
@@ -57,6 +94,8 @@ impl Default for MangoDisplay {
             scale_input: String::new(),
             settings: crate::settings::AppSettings::load(),
             status_message: None,
+            pending_apply: None,
+            apply_generation: 0,
         };
         app.update_inputs_for_selection();
         app
@@ -182,7 +221,7 @@ impl MangoDisplay {
             }
             Message::ScaleDec => {
                 if let Some(idx) = self.selected_output_idx {
-                    self.outputs[idx].scale -= 0.05;
+                    self.outputs[idx].scale = (self.outputs[idx].scale - 0.05).max(0.1);
                     self.update_inputs_for_selection();
                     self.layout_cache.clear();
                 }
@@ -234,7 +273,16 @@ impl MangoDisplay {
             Message::ApplyClicked => {
                 self.normalize_positions();
                 match apply_outputs(&self.outputs) {
-                    Ok(()) => self.status_message = Some("Applied successfully!".to_string()),
+                    Ok(()) => {
+                        self.apply_generation += 1;
+                        let generation = self.apply_generation;
+                        self.pending_apply = Some(PendingApply {
+                            seconds_left: REVERT_TIMEOUT_SECS,
+                            generation,
+                        });
+                        self.status_message = None;
+                        return tick_task(generation);
+                    }
                     Err(e) => self.status_message = Some(format!("Apply error: {}", e)),
                 }
             }
@@ -248,12 +296,74 @@ impl MangoDisplay {
                     Err(e) => self.status_message = Some(format!("Save error: {}", e)),
                 }
             }
+            Message::RevertTick(generation) => {
+                let Some(pending) = self.pending_apply.as_mut() else {
+                    return Task::none();
+                };
+                if pending.generation != generation {
+                    return Task::none();
+                }
+                pending.seconds_left = pending.seconds_left.saturating_sub(1);
+                if pending.seconds_left > 0 {
+                    return tick_task(generation);
+                }
+                self.pending_apply = None;
+                let snapshot = self.baseline.clone();
+                match apply_outputs(&snapshot) {
+                    Ok(()) => {
+                        self.outputs = snapshot;
+                        self.update_inputs_for_selection();
+                        self.layout_cache.clear();
+                        self.status_message =
+                            Some("Reverted to previous configuration.".to_string());
+                    }
+                    Err(e) => self.status_message = Some(format!("Revert error: {}", e)),
+                }
+            }
+            Message::VrrToggled(val) => {
+                if let Some(idx) = self.selected_output_idx {
+                    self.outputs[idx].vrr = val;
+                }
+            }
+            Message::KeepApplied => {
+                self.pending_apply = None;
+                self.baseline = self.outputs.clone();
+                self.status_message = Some("Settings kept.".to_string());
+            }
+            Message::OutputsChanged(new_outputs) => {
+                let current: std::collections::BTreeSet<&str> =
+                    self.outputs.iter().map(|o| o.name.as_str()).collect();
+                let incoming: std::collections::BTreeSet<&str> =
+                    new_outputs.iter().map(|o| o.name.as_str()).collect();
+
+                if current != incoming {
+                    self.outputs = new_outputs;
+                    self.baseline = self.outputs.clone();
+                    self.pending_apply = None;
+                    self.selected_output_idx = if self.outputs.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            self.selected_output_idx
+                                .unwrap_or(0)
+                                .min(self.outputs.len() - 1),
+                        )
+                    };
+                    self.update_inputs_for_selection();
+                    self.layout_cache.clear();
+                    self.status_message = Some("Monitor configuration changed.".to_string());
+                }
+            }
             Message::RestoreDefaultClicked => match restore_default_config(&self.settings) {
                 Ok(()) => self.status_message = Some("Restored to default config!".to_string()),
                 Err(e) => self.status_message = Some(format!("Restore error: {}", e)),
             },
         }
         Task::none()
+    }
+
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        iced::Subscription::run(hotplug_stream).map(Message::OutputsChanged)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -438,10 +548,30 @@ impl MangoDisplay {
                 .spacing(5)
                 .align_y(alignment::Vertical::Center);
                 sidebar = sidebar.push(row_trans);
+
+                let row_vrr = row![
+                    container(text("Adaptive Sync").size(14)).width(label_width),
+                    checkbox(out.vrr).on_toggle(Message::VrrToggled),
+                ]
+                .spacing(5)
+                .align_y(alignment::Vertical::Center);
+                sidebar = sidebar.push(row_vrr);
             }
         }
 
-        if let Some(ref msg) = self.status_message {
+        if let Some(ref pending) = self.pending_apply {
+            sidebar = sidebar.push(
+                column![
+                    text(format!(
+                        "Keep these settings? Reverting in {}s",
+                        pending.seconds_left
+                    ))
+                    .size(13),
+                    button("Keep").on_press(Message::KeepApplied),
+                ]
+                .spacing(5),
+            );
+        } else if let Some(ref msg) = self.status_message {
             sidebar = sidebar.push(text(msg).size(13));
         }
 
@@ -852,5 +982,135 @@ impl<'a> Program<Message> for LayoutCanvas<'a> {
         });
 
         vec![geometry]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::{Output, OutputMode};
+
+    pub(super) fn test_output(name: &str) -> Output {
+        Output {
+            name: name.into(),
+            description: "Test Monitor".into(),
+            make: String::new(),
+            model: String::new(),
+            serial: String::new(),
+            physical_size: String::new(),
+            position: (0, 0),
+            scale: 1.0,
+            transform: "normal".into(),
+            modes: vec![OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_rate: 60.0,
+                current: true,
+                preferred: true,
+            }],
+            enabled: true,
+            vrr: false,
+        }
+    }
+
+    pub(super) fn test_app(outputs: Vec<Output>) -> MangoDisplay {
+        MangoDisplay {
+            baseline: outputs.clone(),
+            outputs,
+            selected_output_idx: Some(0),
+            layout_cache: Cache::default(),
+            x_input: String::new(),
+            y_input: String::new(),
+            scale_input: String::new(),
+            settings: crate::settings::AppSettings::default(),
+            status_message: None,
+            pending_apply: None,
+            apply_generation: 0,
+        }
+    }
+
+    #[test]
+    fn scale_dec_never_goes_below_minimum() {
+        let mut app = test_app(vec![test_output("DP-1")]);
+        for _ in 0..40 {
+            let _ = app.update(Message::ScaleDec);
+        }
+        assert!(
+            app.outputs[0].scale >= 0.1,
+            "scale fell to {}",
+            app.outputs[0].scale
+        );
+    }
+
+    #[test]
+    fn tick_decrements_countdown_and_stale_tick_is_ignored() {
+        let mut app = test_app(vec![test_output("DP-1")]);
+        app.apply_generation = 2;
+        app.pending_apply = Some(PendingApply {
+            seconds_left: 10,
+            generation: 2,
+        });
+
+        let _ = app.update(Message::RevertTick(1));
+        assert_eq!(app.pending_apply.as_ref().unwrap().seconds_left, 10);
+
+        let _ = app.update(Message::RevertTick(2));
+        assert_eq!(app.pending_apply.as_ref().unwrap().seconds_left, 9);
+    }
+
+    #[test]
+    fn keep_clears_pending_and_promotes_outputs_to_baseline() {
+        let mut app = test_app(vec![test_output("DP-1")]);
+        app.outputs[0].position = (100, 0);
+        app.pending_apply = Some(PendingApply {
+            seconds_left: 10,
+            generation: 1,
+        });
+
+        let _ = app.update(Message::KeepApplied);
+
+        assert!(app.pending_apply.is_none());
+        assert_eq!(app.baseline[0].position, (100, 0));
+    }
+
+    #[test]
+    fn hotplug_with_same_monitor_set_keeps_unsaved_edits() {
+        let mut app = test_app(vec![test_output("DP-1")]);
+        app.outputs[0].position = (500, 0);
+
+        let _ = app.update(Message::OutputsChanged(vec![test_output("DP-1")]));
+
+        assert_eq!(app.outputs[0].position, (500, 0));
+    }
+
+    #[test]
+    fn hotplug_with_new_monitor_replaces_state_and_cancels_pending() {
+        let mut app = test_app(vec![test_output("DP-1")]);
+        app.outputs[0].position = (500, 0);
+        app.pending_apply = Some(PendingApply {
+            seconds_left: 10,
+            generation: 1,
+        });
+
+        let _ = app.update(Message::OutputsChanged(vec![
+            test_output("DP-1"),
+            test_output("HDMI-A-1"),
+        ]));
+
+        assert_eq!(app.outputs.len(), 2);
+        assert_eq!(app.outputs[0].position, (0, 0));
+        assert!(app.pending_apply.is_none());
+        assert_eq!(app.baseline.len(), 2);
+    }
+
+    #[test]
+    fn hotplug_removal_clamps_selection() {
+        let mut app = test_app(vec![test_output("DP-1"), test_output("HDMI-A-1")]);
+        app.selected_output_idx = Some(1);
+
+        let _ = app.update(Message::OutputsChanged(vec![test_output("DP-1")]));
+
+        assert_eq!(app.selected_output_idx, Some(0));
+        assert_eq!(app.outputs.len(), 1);
     }
 }

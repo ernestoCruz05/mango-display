@@ -83,6 +83,7 @@ fn main() -> iced::Result {
         ui::MangoDisplay::view,
     )
     .title("MDisplay")
+    .subscription(ui::MangoDisplay::subscription)
     .theme(move |_app: &ui::MangoDisplay| custom_theme.clone())
     .window_size(iced::Size::new(1000.0, 700.0))
     .run()
